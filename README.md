@@ -1,48 +1,60 @@
 # Just Dependent Types
 
-An attempt to produce a language with dependent types, and otherwise "nothing fancy".
+An attempt to produce an interpreted language with dependent types, and otherwise "nothing fancy".
 
-## What is a type?
+## Values
 
-If two values `x` and `y` are the same type then `x == y` yields either true or false.
+A value may be:
 
-If they are different types then `x == y` yields an error.
+* an integer
+* f32
+* f64
+* true or false
+* an error
+* a list of values
+* a function, that takes a value as an argument and returns a value
+* (user-defined structures to be determined)
 
-Intuitively you might think things are "different" if they are different types and hence should compare nonequal. But sometimes, different types can be used to represent the same information, for example `4` vs. `4.0`. If `4 == 4.0` returned false then it would be confusing and might lead to bugs.
+## Equality
 
-"Being the same type" is expected to be an equivalence relation, so the set of all values is partitioned by type.
+The `==` relation returns true, false or an error.
 
-## What is a format?
+* Integers compare equal if they're equal
+* f32 and f64 cannot be compared for equality
+* true, false compare equal if they're equal
+* errors propagate through `==`
+* lists compare equal if they are of the same length and all they compare equal elementwise.
+* lists compare nonequal if they are of different length
+* lists compare nonequal if the first few elements compare equal and the next compares nonequal (even if the remainder would give errors).
+* functions cannot be compared for equality
+* (user-defined structures to be determined)
+* comparing elements across these categorizations returns an error, e.g. comparing an integer against true.
 
-A format is concerned with how a given type is stored physically. `u8` and `u16` are both formats of the `int` type. (They are partial in the sense that not all integer values can be represented concretely in that way).
+As you can see, `==` only acts as an equivalence relation within certain domains. When used more broadly than that, it might return an error instead. Examples where it behaves sensibly:
 
-The set of all values is also partitioned by format.
+* across `int`
+* across `bool`
+* across `tuple[A,B]` where it behaves sensibly across A and B
+* across `A^n` where it behaves sensibly across A, and A is a nonnegative integer
+* across `A*` where it behaves sensibly across A
 
-Note that two values can compare equal but have different formats. `4u8 == 4u16` but the format is different.
+These can be thought of as "types", but a given value may belong to multiple of them. For instance, `[1,2]` belongs to `tuple[int,int]`, `int^2` and `int*`.
 
-Formats may refer to runtime parameters by name. Suppose you have a dependently typed function:
+## Function signatures
+
+Function signatures contain things that look like types.
 
 ```
-f: (m:int) -> (n:int) -> int ^ m -> int ^ n -> int
+f: int -> int
 ```
 
-This may be given the format:
+What this means is:
 
-```
-f_concrete: (param0:u64) -> (param0:u64) -> slice u32 param0 -> slice u32 param1 -> u64
-```
+* If you call `f` with a value that isn't an `int`, it will return an error (i.e. a precondition)
+* You're asserting that otherwise, `f` will always return an `int` (i.e. a postcondition).
 
-Note that `slice u32 param0` and `slice u32 param1` are different formats, because they refer to different parameters. But at runtime the types may or may not end up equal, depending on whether the values of m and n are equal. So, formats are known at compile time but types may depend on runtime values.
+The first can be checked at runtime, but the second cannot. We need a _proof_ that the function actually yields the desired value.
 
-When a function is compiled, it is compiled based on the formats. Compiling it with the same formats produces the same code, so only needs to be done once and can be cached/reused.
+Note that all that is required on these "types" is that they are predicates, i.e. they can decide membership of any given value. They don't have to behave nicely with `==`.
 
-## Format inference
-
-Format can't always be easily inferred. For example, is the value of `(x:u32) + (y:u32)` a `u32` or a `u64`? It depends if we need to make space for it due to overflowing. Put another way, the same function can be compiled with the same argument formats but a different return format.
-
-There will need to be some system of guesswork and hints to get around this problem.
-
-## Omitted constants
-
-One useful kind of format is the omitted constant. This is a constant value which is known at compile time, and so can be omitted at runtime. It doesn't always make sense to use this format if the constant is known, especially if the same function is called with a lot of different constant values.
-
+(TODO: decide whether any predicate can be used here).
