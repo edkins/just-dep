@@ -65,6 +65,7 @@ dependencies = [
  "clap",
  "nom",
  "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
