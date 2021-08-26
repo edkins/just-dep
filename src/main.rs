@@ -1,6 +1,7 @@
 mod ast;
 mod eval;
 mod parse;
+mod typecheck;
 
 use clap::{App, AppSettings, Arg};
 use std::fs;

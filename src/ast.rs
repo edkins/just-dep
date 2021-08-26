@@ -13,9 +13,10 @@ pub struct Func {
     pub body: Expr,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expr {
     Int(BigInt),
     Var(String),
     Call(String, Vec<Expr>),
+    Array(Vec<Expr>),
 }

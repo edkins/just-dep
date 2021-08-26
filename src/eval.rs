@@ -36,7 +36,7 @@ pub enum EvalError {
     ArgIsWrongType(String, Type, Val),
     RetTypeEvalError(Box<EvalError>),
     RetTypeNotType,
-    ResultIsWrongType,
+    ResultIsWrongType(Type, Val),
     Overflow,
     UnexpectedError,
 }
@@ -165,7 +165,7 @@ impl Script {
         if self.has_type(&result, &ret_type) {
             Ok(result)
         } else {
-            Err(EvalError::ResultIsWrongType)
+            Err(EvalError::ResultIsWrongType(ret_type.clone(), result))
         }
     }
 
@@ -174,11 +174,11 @@ impl Script {
             Expr::Int(n) => Ok(Val::Int(n.clone())),
             Expr::Var(x) => self.lookup_value(x, env),
             Expr::Call(f, args) => {
-                let mut arg_vals = vec![];
-                for arg in args {
-                    arg_vals.push(self.eval(arg, env)?);
-                }
+                let arg_vals:Vec<_> = args.iter().map(|x|self.eval(x,env)).collect::<Result<_,_>>()?;
                 self.call(f, &arg_vals)
+            }
+            Expr::Array(xs) => {
+                Ok(Val::Array(xs.iter().map(|x|self.eval(x,env)).collect::<Result<_,_>>()?))
             }
         }
     }
