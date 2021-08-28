@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use num_bigint::{BigInt,Sign};
 
-use crate::ast::{Expr,Func};
+use crate::ast::{Expr,Func,Script};
 
 struct CheckedFunc {
     args: Vec<(String,Expr)>,
@@ -15,7 +15,86 @@ pub enum TypeError {
     CannotCoerceArgumentType(String, usize, Expr, Expr, Expr),
     NoSuchFunc(String),
     NoSuchVar(String),
+    Recursion(String),
     WrongNumberOfArgs(String, usize, usize),
+}
+
+pub fn type_check(script: &Script) -> Result<(), TypeError> {
+    let ordering = get_function_order(script)?;
+    let mut checked_funcs = HashMap::new();
+    for f in &ordering {
+        let checked = check_func(script.funcs.get(f).unwrap(), &checked_funcs)?;
+        if checked_funcs.contains_key(f) {
+            unreachable!();
+        }
+        checked_funcs.insert(f.clone(), checked);
+    }
+    Ok(())
+}
+
+fn get_function_order(script: &Script) -> Result<Vec<String>, TypeError> {
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut result = vec![];
+    for f in &script.declaration_order {
+        visit_for_ordering(script, f, &mut visiting, &mut visited, &mut result)?;
+    }
+    Ok(result)
+}
+
+fn visit_for_ordering(script: &Script, f: &str, visiting: &mut HashSet<String>, visited: &mut HashSet<String>, result: &mut Vec<String>) -> Result<(), TypeError> {
+    if visited.contains(f) {
+        Ok(())
+    } else if visiting.contains(f) {
+        Err(TypeError::Recursion(f.to_owned()))
+    } else if let Some(func) = script.funcs.get(f) {
+        visiting.insert(f.to_owned());
+        for dep in &get_dependencies(func) {
+            visit_for_ordering(script, dep, visiting, visited, result)?;
+        }
+        if visited.contains(f) {
+            unreachable!();
+        }
+        visited.insert(f.to_owned());
+        result.push(f.to_owned());
+        Ok(())
+    } else {
+        Err(TypeError::NoSuchFunc(f.to_owned()))
+    }
+}
+
+fn get_dependencies(func: &Func) -> Vec<String> {
+    let mut result = vec![];
+    for arg in &func.args {
+        add_dependencies(&arg.1, &mut result);
+    }
+    add_dependencies(&func.ret, &mut result);
+    add_dependencies(&func.body, &mut result);
+    result
+}
+
+fn add_dependencies(expr: &Expr, result: &mut Vec<String>) {
+    match expr {
+        Expr::Int(_) => {}
+        Expr::Var(x) => {
+            if !result.contains(x) {
+                result.push(x.clone());
+            }
+        }
+        Expr::Call(f,xs) => {
+            if !result.contains(f) {
+                result.push(f.clone());
+            }
+            for x in xs {
+                add_dependencies(x, result);
+            }
+        }
+        Expr::Array(xs) => {
+            for x in xs {
+                add_dependencies(x, result);
+            }
+        }
+    }
 }
 
 fn check_func(func: &Func, funcs: &HashMap<String, CheckedFunc>) -> Result<CheckedFunc, TypeError> {

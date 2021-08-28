@@ -33,7 +33,8 @@ fn funcs_to_script(mut func_list: Vec<(String, Func)>) -> Result<Script, String>
         }
         funcs.insert(name, func);
     }
-    Ok(Script { funcs })
+    let declaration_order = func_list.iter().map(|x|x.0.clone()).collect();
+    Ok(Script { declaration_order, funcs })
 }
 
 fn func(input: &str) -> IResult<&str, (String, Func), Err> {

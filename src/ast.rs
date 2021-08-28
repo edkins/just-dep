@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Script {
+    pub declaration_order: Vec<String>,
     pub funcs: HashMap<String, Func>,
 }
 
