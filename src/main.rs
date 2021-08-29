@@ -1,4 +1,5 @@
 mod ast;
+mod combine;
 mod eval;
 mod parse;
 mod typecheck;
@@ -13,12 +14,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(Arg::with_name("ARGS").multiple(true).help("Args to run script with"))
         .get_matches();
 
-    let args:Vec<_> = matches.values_of("ARGS").unwrap().map(|s|s.to_owned()).collect();
+    let args:Vec<_> = if let Some(vs) = matches.values_of("ARGS") {
+        vs.map(|s|s.to_owned()).collect()
+    } else {
+        vec![]
+    };
 
     let input_filename = matches.value_of("SCRIPT").unwrap();
+
+    let prelude_script = parse::parse(include_str!("prelude.jd"))?;
+
     let input = fs::read_to_string(input_filename)?;
     let script = parse::parse(&input)?;
-    let result = script.eval_main(&args)?;
+    let program = combine::combine(&prelude_script, &script)?;
+    typecheck::type_check(&program)?;
+    let result = program.eval_main(&args)?;
 
     println!("{:?}", result);
     Ok(())

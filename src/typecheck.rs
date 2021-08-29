@@ -1,13 +1,16 @@
-use std::collections::{HashMap,HashSet};
-use num_bigint::{BigInt,Sign};
+use std::collections::HashMap;
+use std::fmt;
+use num_bigint::{Sign};
 
-use crate::ast::{Expr,Func,Script};
+use crate::ast::Expr;
+use crate::combine::{Program,Func};
 
 struct CheckedFunc {
     args: Vec<(String,Expr)>,
     ret: Expr,
 }
 
+#[derive(Debug)]
 pub enum TypeError {
     ExpectedArgToBeOfTypeType(String, Expr, Expr),
     DuplicateArgName(String),
@@ -15,102 +18,39 @@ pub enum TypeError {
     CannotCoerceArgumentType(String, usize, Expr, Expr, Expr),
     NoSuchFunc(String),
     NoSuchVar(String),
-    Recursion(String),
     WrongNumberOfArgs(String, usize, usize),
+    WhenChecking(String, Box<TypeError>),
 }
 
-pub fn type_check(script: &Script) -> Result<(), TypeError> {
-    let ordering = get_function_order(script)?;
+pub fn type_check(program: &Program) -> Result<(), TypeError> {
     let mut checked_funcs = HashMap::new();
-    for f in &ordering {
-        let checked = check_func(script.funcs.get(f).unwrap(), &checked_funcs)?;
-        if checked_funcs.contains_key(f) {
-            unreachable!();
+    for name in &program.order {
+        if let Some(func) = program.funcs.get(name) {
+            let checked = check_func(func, &checked_funcs).map_err(|e|TypeError::WhenChecking(name.clone(),Box::new(e)))?;
+            checked_funcs.insert(name.clone(), checked);
+        } else {
+            return Err(TypeError::NoSuchFunc(name.clone()));
         }
-        checked_funcs.insert(f.clone(), checked);
     }
     Ok(())
 }
 
-fn get_function_order(script: &Script) -> Result<Vec<String>, TypeError> {
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
-    let mut result = vec![];
-    for f in &script.declaration_order {
-        visit_for_ordering(script, f, &mut visiting, &mut visited, &mut result)?;
-    }
-    Ok(result)
-}
-
-fn visit_for_ordering(script: &Script, f: &str, visiting: &mut HashSet<String>, visited: &mut HashSet<String>, result: &mut Vec<String>) -> Result<(), TypeError> {
-    if visited.contains(f) {
-        Ok(())
-    } else if visiting.contains(f) {
-        Err(TypeError::Recursion(f.to_owned()))
-    } else if let Some(func) = script.funcs.get(f) {
-        visiting.insert(f.to_owned());
-        for dep in &get_dependencies(func) {
-            visit_for_ordering(script, dep, visiting, visited, result)?;
-        }
-        if visited.contains(f) {
-            unreachable!();
-        }
-        visited.insert(f.to_owned());
-        result.push(f.to_owned());
-        Ok(())
-    } else {
-        Err(TypeError::NoSuchFunc(f.to_owned()))
-    }
-}
-
-fn get_dependencies(func: &Func) -> Vec<String> {
-    let mut result = vec![];
-    for arg in &func.args {
-        add_dependencies(&arg.1, &mut result);
-    }
-    add_dependencies(&func.ret, &mut result);
-    add_dependencies(&func.body, &mut result);
-    result
-}
-
-fn add_dependencies(expr: &Expr, result: &mut Vec<String>) {
-    match expr {
-        Expr::Int(_) => {}
-        Expr::Var(x) => {
-            if !result.contains(x) {
-                result.push(x.clone());
-            }
-        }
-        Expr::Call(f,xs) => {
-            if !result.contains(f) {
-                result.push(f.clone());
-            }
-            for x in xs {
-                add_dependencies(x, result);
-            }
-        }
-        Expr::Array(xs) => {
-            for x in xs {
-                add_dependencies(x, result);
-            }
-        }
-    }
-}
-
 fn check_func(func: &Func, funcs: &HashMap<String, CheckedFunc>) -> Result<CheckedFunc, TypeError> {
-    let mut env = HashMap::new();
+    if !func.prelude {
+        let mut env = HashMap::new();
 
-    for arg in &func.args {
-        check_arg_is_of_type_type(&arg.0, &arg.1, funcs, &env)?;
-        if env.contains_key(&arg.0) {
-            return Err(TypeError::DuplicateArgName(arg.0.clone()));
+        for arg in &func.args {
+            check_arg_is_of_type_type(&arg.0, &arg.1, funcs, &env)?;
+            if env.contains_key(&arg.0) {
+                return Err(TypeError::DuplicateArgName(arg.0.clone()));
+            }
+            env.insert(arg.0.clone(), arg.1.clone());
         }
-        env.insert(arg.0.clone(), arg.1.clone());
-    }
 
-    let t = check_expr(&func.body, funcs, &env)?;
-    if !can_coerce_type(&t, &func.ret, funcs, &env) {
-        return Err(TypeError::CannotCoerceReturnType(t, func.ret.clone()));
+        let t = check_expr(&func.body, funcs, &env)?;
+        if !can_coerce_type(&t, &func.ret, funcs, &env) {
+            return Err(TypeError::CannotCoerceReturnType(t, func.ret.clone()));
+        }
     }
 
     Ok(CheckedFunc {
@@ -141,6 +81,12 @@ fn check_expr(expr: &Expr, funcs: &HashMap<String, CheckedFunc>, env: &HashMap<S
         Expr::Var(x) => {
             if let Some(t) = env.get(x) {
                 Ok(t.clone())
+            } else if let Some(cf) = funcs.get(x) {
+                if cf.args.len() == 0 {
+                    Ok(cf.ret.clone())
+                } else {
+                    Err(TypeError::WrongNumberOfArgs(x.clone(), cf.args.len(), 0))
+                }
             } else {
                 Err(TypeError::NoSuchVar(x.clone()))
             }
@@ -151,7 +97,7 @@ fn check_expr(expr: &Expr, funcs: &HashMap<String, CheckedFunc>, env: &HashMap<S
                     let ts = xs.iter().map(|x|check_expr(x, funcs, env)).collect::<Result<Vec<_>,_>>()?;
                     let mut var_mapping = HashMap::new();
                     for i in 0..ts.len() {
-                        let t1 = cf.args[i].1.map_vars(&var_mapping)?;
+                        let t1 = cf.args[i].1.map_vars(&var_mapping, funcs)?;
                         if !can_coerce_type(&ts[i], &t1, funcs, env) {
                             return Err(TypeError::CannotCoerceArgumentType(f.clone(), i, xs[i].clone(), ts[i].clone(), t1));
                         }
@@ -160,7 +106,7 @@ fn check_expr(expr: &Expr, funcs: &HashMap<String, CheckedFunc>, env: &HashMap<S
                         }
                         var_mapping.insert(cf.args[i].0.clone(), xs[i].clone());
                     }
-                    cf.ret.map_vars(&var_mapping)
+                    cf.ret.map_vars(&var_mapping, funcs)
                 } else {
                     Err(TypeError::WrongNumberOfArgs(f.clone(), cf.args.len(), xs.len()))
                 }
@@ -176,18 +122,20 @@ fn check_expr(expr: &Expr, funcs: &HashMap<String, CheckedFunc>, env: &HashMap<S
 }
 
 impl Expr {
-    fn map_vars(&self, var_mapping: &HashMap<String, Expr>) -> Result<Expr,TypeError> {
+    fn map_vars(&self, var_mapping: &HashMap<String, Expr>, funcs: &HashMap<String, CheckedFunc>) -> Result<Expr,TypeError> {
         match self {
             Expr::Int(_) => Ok(self.clone()),
             Expr::Var(x) => {
                 if let Some(y) = var_mapping.get(x) {
                     Ok(y.clone())
+                } else if funcs.contains_key(x) {
+                    Ok(self.clone())
                 } else {
                     Err(TypeError::NoSuchVar(x.clone()))
                 }
             }
-            Expr::Call(f, xs) => Ok(Expr::Call(f.clone(), xs.iter().map(|x|x.map_vars(var_mapping)).collect::<Result<_,_>>()?)),
-            Expr::Array(xs) => Ok(Expr::Array(xs.iter().map(|x|x.map_vars(var_mapping)).collect::<Result<_,_>>()?)),
+            Expr::Call(f, xs) => Ok(Expr::Call(f.clone(), xs.iter().map(|x|x.map_vars(var_mapping, funcs)).collect::<Result<_,_>>()?)),
+            Expr::Array(xs) => Ok(Expr::Array(xs.iter().map(|x|x.map_vars(var_mapping, funcs)).collect::<Result<_,_>>()?)),
         }
     }
 
@@ -237,13 +185,6 @@ impl Expr {
             _ => None
         }
     }
-
-    fn is_literal_integer(&self) -> Option<&BigInt> {
-        match self {
-            Expr::Int(n) => Some(n),
-            _ => None
-        }
-    }
 }
 
 /// Returns whether `sub` is known to be coercible to `sup` in the given environment.
@@ -254,6 +195,7 @@ impl Expr {
 ///
 /// - t < t
 /// - false < t
+/// - bool < type
 /// - uint < int
 /// - list t0 < list t1           if t0 < t1
 /// - vector t0 n < list t1       if t0 < t1
@@ -263,11 +205,13 @@ impl Expr {
 /// - vector t0 n < tuple ts      if n==length ts and t0 < each of ts
 /// - tuple ts0 < tuple ts1       if length ts0==length ts1 and each of ts0 < corresponding ts1
 ///
-/// Note also that true = vector t 0 = tuple [], but I'm not sure how useful this is in practice
+/// Note also that true = vector t 0 = tuple [] = list false, but I'm not sure how useful this is in practice
 ///
 fn can_coerce_type(sub: &Expr, sup: &Expr, funcs: &HashMap<String, CheckedFunc>, env: &HashMap<String, Expr>) -> bool {
     if sub == sup || sub.is_label("false") {
         true
+    } else if sup.is_label("type") {
+        sub.is_label("bool")
     } else if sup.is_label("int") {
         sub.is_label("uint")
     } else if let Some(t1) = sup.is_list_type() {
@@ -325,3 +269,11 @@ fn can_prove_equal(a: &Expr, b: &Expr, _funcs: &HashMap<String, CheckedFunc>, _e
 fn can_prove_equal_usize(a: &Expr, b: usize, funcs: &HashMap<String, CheckedFunc>, env: &HashMap<String, Expr>) -> bool {
     can_prove_equal(a, &Expr::Int(b.into()), funcs, env)
 }
+
+impl fmt::Display for TypeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Type error {:?}", self)
+    }
+}
+
+impl std::error::Error for TypeError {}

@@ -1,14 +1,12 @@
 use num_bigint::BigInt;
-use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Script {
-    pub declaration_order: Vec<String>,
-    pub funcs: HashMap<String, Func>,
+    pub decls: Vec<(String, Decl)>,
 }
 
 #[derive(Clone, Debug)]
-pub struct Func {
+pub struct Decl {
     pub args: Vec<(String, Expr)>,
     pub ret: Expr,
     pub body: Expr,

@@ -1,19 +1,17 @@
-use crate::ast::{Expr, Func, Script};
+use crate::ast::{Expr, Decl, Script};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
     character::complete::{digit1, multispace0},
-    combinator::{all_consuming, map, map_res, value},
-    multi::many1,
+    combinator::{all_consuming, map, value},
+    multi::{many0, many1},
     sequence::{delimited, preceded, terminated},
     Finish, IResult,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use std::{cmp::Ordering, fmt};
 
-/**
- * Parsing entry point
- */
+/// Parsing entry point
 pub fn parse(input: &str) -> Result<Script, ParseErr> {
     Ok(all_consuming(preceded(whitespace, script))(input)
         .finish()
@@ -22,24 +20,12 @@ pub fn parse(input: &str) -> Result<Script, ParseErr> {
 }
 
 fn script(input: &str) -> IResult<&str, Script, Err> {
-    map_res(many1(func), funcs_to_script)(input)
+    map(many1(func), |decls|Script{decls})(input)
 }
 
-fn funcs_to_script(mut func_list: Vec<(String, Func)>) -> Result<Script, String> {
-    let mut funcs = HashMap::new();
-    for (name, func) in func_list.drain(..) {
-        if funcs.contains_key(&name) {
-            return Err(format!("Duplicate function: {}", name));
-        }
-        funcs.insert(name, func);
-    }
-    let declaration_order = func_list.iter().map(|x|x.0.clone()).collect();
-    Ok(Script { declaration_order, funcs })
-}
-
-fn func(input: &str) -> IResult<&str, (String, Func), Err> {
+fn func(input: &str) -> IResult<&str, (String, Decl), Err> {
     let (input, name) = word_owned(input)?;
-    let (input, args) = many1(arg)(input)?;
+    let (input, args) = many0(arg)(input)?;
     let arg_names: HashSet<_> = args.iter().map(|a| a.0.clone()).collect();
     if arg_names.len() < args.len() {
         return Err(nom::Err::Failure(Err {
@@ -52,7 +38,7 @@ fn func(input: &str) -> IResult<&str, (String, Func), Err> {
     let (input, ()) = symbol("=")(input)?;
     let (input, body) = expr(input)?;
     let (input, ()) = symbol(";")(input)?;
-    Ok((input, (name, Func { args, ret, body })))
+    Ok((input, (name, Decl { args, ret, body })))
 }
 
 fn arg(input: &str) -> IResult<&str, (String, Expr), Err> {
@@ -69,7 +55,11 @@ fn expr(input: &str) -> IResult<&str, Expr, Err> {
 }
 
 fn tight_expr(input: &str) -> IResult<&str, Expr, Err> {
-    alt((number, var, delimited(symbol("("), expr, symbol(")"))))(input)
+    alt((number, var, delimited(symbol("("), expr, symbol(")")), array))(input)
+}
+
+fn array(input: &str) -> IResult<&str, Expr, Err> {
+    map(delimited(symbol("["), many0(expr), symbol("]")), Expr::Array)(input)
 }
 
 fn word_with_args(input: &str) -> IResult<&str, Expr, Err> {

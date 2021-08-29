@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::fmt;
-use num_bigint::{BigInt, Sign};
+use num_bigint::BigInt;
 use num_traits::cast::ToPrimitive;
 
-use crate::ast::{Func, Script, Expr};
+use crate::ast::Expr;
+use crate::combine::{Program, Func};
 
 #[derive(Clone, Debug)]
 pub enum Type {
+    False,
+    True,
     Bool,
     Int,
     Uint,
@@ -19,7 +22,6 @@ pub enum Type {
 
 #[derive(Clone, Debug)]
 pub enum Val {
-    Bool(bool),
     Int(BigInt),
     String(String),
     Array(Vec<Val>),
@@ -29,16 +31,12 @@ pub enum Val {
 #[derive(Debug)]
 pub enum EvalError {
     WrongNumberOfArgs(String, usize, usize),
-    NoSuchVar(String),
     NoSuchFunc(String),
-    ArgTypeEvalError(String, Box<EvalError>),
-    ArgTypeNotType(String),
-    ArgIsWrongType(String, Type, Val),
-    RetTypeEvalError(Box<EvalError>),
-    RetTypeNotType,
-    ResultIsWrongType(Type, Val),
+    NoSuchPreludeFunction(String),
     Overflow,
-    UnexpectedError,
+    NotInteger(Val),
+    NotType(Val),
+    NotArray(Val),
 }
 
 impl Val {
@@ -48,21 +46,21 @@ impl Val {
                 None => Err(EvalError::Overflow),
                 Some(n) => Ok(n),
             },
-            _ => Err(EvalError::UnexpectedError),
+            _ => Err(EvalError::NotInteger(self.clone())),
         }
     }
 
     fn unwrap_type(&self) -> Result<Type, EvalError> {
         match self {
             Val::Type(t) => Ok(t.clone()),
-            _ => Err(EvalError::UnexpectedError),
+            _ => Err(EvalError::NotType(self.clone())),
         }
     }
 
     fn unwrap_array(&self) -> Result<Vec<Val>, EvalError> {
         match self {
             Val::Array(xs) => Ok(xs.clone()),
-            _ => Err(EvalError::UnexpectedError),
+            _ => Err(EvalError::NotArray(self.clone())),
         }
     }
 
@@ -71,54 +69,32 @@ impl Val {
     }
 }
 
-impl Script {
-    fn lookup_value(&self, name: &str, env: &HashMap<String, Val>) -> Result<Val, EvalError> {
-        match name {
-            "true" => Ok(Val::Bool(true)),
-            "false" => Ok(Val::Bool(false)),
-            "bool" => Ok(Val::Type(Type::Bool)),
-            "int" => Ok(Val::Type(Type::Int)),
-            "uint" => Ok(Val::Type(Type::Uint)),
-            "string" => Ok(Val::Type(Type::String)),
-            "type" => Ok(Val::Type(Type::Type)),
-            _ => {
-                match env.get(name) {
-                    None => Err(EvalError::NoSuchVar(name.to_owned())),
-                    Some(x) => Ok(x.clone()),
+impl Program {
+    fn lookup_or_compute_value(&self, name: &str, global_env: &mut HashMap<String, Val>, env: &HashMap<String, Val>) -> Result<Val, EvalError> {
+        match env.get(name) {
+            Some(x) => Ok(x.clone()),
+            None => match global_env.get(name) {
+                None => {
+                    let x = self.call(name, &[], global_env)?;
+                    global_env.insert(name.to_owned(), x.clone());
+                    Ok(x)
                 }
+                Some(x) => Ok(x.clone()),
             }
         }
     }
 
-    fn lookup_fn(&self, name: &str) -> Result<Func, EvalError> {
-        match name {
-            "list" => Ok(Func {
-                args: vec![("t".to_owned(),Expr::Var("type".to_owned()))],
-                ret: Expr::Var("type".to_owned()),
-                body: Expr::Var("".to_owned()), // dummy nonsense value for body
-            }),
-            "vector" => Ok(Func {
-                args: vec![("t".to_owned(),Expr::Var("type".to_owned())), ("n".to_owned(), Expr::Var("uint".to_owned()))],
-                ret: Expr::Var("type".to_owned()),
-                body: Expr::Var("".to_owned()),
-            }),
-            "tuple" => Ok(Func {
-                args: vec![("ts".to_owned(),Expr::Call("list".to_owned(), vec![Expr::Var("type".to_owned())]))],
-                ret: Expr::Var("type".to_owned()),
-                body: Expr::Var("".to_owned()),
-            }),
-            _ => {
-                match self.funcs.get(name) {
-                    None => Err(EvalError::NoSuchFunc(name.to_owned())),
-                    Some(f) => Ok(f.clone()),   // TODO: avoid clone
-                }
-            }
+    fn lookup_fn(&self, name: &str) -> Result<&Func, EvalError> {
+        match self.funcs.get(name) {
+            None => Err(EvalError::NoSuchFunc(name.to_owned())),
+            Some(f) => Ok(f),
         }
     }
 
+    /*
     fn has_type(&self, value: &Val, typ: &Type) -> bool {
         match (value, typ) {
-            (Val::Bool(_), Type::Bool) | (Val::Int(_), Type::Int) | (Val::String(_), Type::String) | (Val::Type(_), Type::Type) => true,
+            (Val::Type(Type::False), Type::Bool) | (Val::Type(Type::True), Type::Bool) | (Val::Int(_), Type::Int) | (Val::String(_), Type::String) | (Val::Type(_), Type::Type) => true,
             (Val::Int(n), Type::Uint) => n.sign() != Sign::Minus,
             (Val::Array(xs), Type::List(t)) => xs.iter().all(|x| self.has_type(x, t)),
             (Val::Array(xs), Type::Vector(t,n)) => xs.len() == *n && xs.iter().all(|x| self.has_type(x, t)),
@@ -126,72 +102,67 @@ impl Script {
             _ => false,
         }
     }
+    */
 
-    fn call(&self, name: &str, args: &[Val]) -> Result<Val, EvalError> {
-        let func = self.lookup_fn(name)?;
+    fn call(&self, f: &str, args: &[Val], global_env: &mut HashMap<String, Val>) -> Result<Val, EvalError> {
+        let func = self.lookup_fn(f)?;
         if func.args.len() != args.len() {
-            return Err(EvalError::WrongNumberOfArgs(name.to_owned(), func.args.len(), args.len()));
+            return Err(EvalError::WrongNumberOfArgs(f.to_owned(), func.args.len(), args.len()));
         }
-        let mut env = HashMap::new();
-        for ((name, typ_expr), value) in func.args.iter().zip(args) {
-            match self.eval(typ_expr, &env) {
-                Ok(Val::Type(t)) => {
-                    if self.has_type(value, &t) {
-                        env.insert(name.to_owned(), value.clone());
-                    } else {
-                        return Err(EvalError::ArgIsWrongType(name.to_owned(), t.clone(), value.clone()));
-                    }
-                },
-                Ok(_) => return Err(EvalError::ArgTypeNotType(name.to_owned())),
-                Err(e) => return Err(EvalError::ArgTypeEvalError(name.to_owned(), Box::new(e))),
+
+        let result = if func.prelude {
+            match f {
+                "true" => Val::Type(Type::True),
+                "false" => Val::Type(Type::False),
+                "bool" => Val::Type(Type::Bool),
+                "int" => Val::Type(Type::Int),
+                "uint" => Val::Type(Type::Uint),
+                "string" => Val::Type(Type::String),
+                "type" => Val::Type(Type::Type),
+                "list" => Val::Type(Type::List(Box::new(args[0].unwrap_type()?))),
+                "vector" => Val::Type(Type::Vector(
+                        Box::new(args[0].unwrap_type()?),
+                        args[1].unwrap_usize()?
+                )),
+                "tuple" => Val::Type(Type::Tuple(args[0].unwrap_array_of_types()?)),
+                _ => return Err(EvalError::NoSuchPreludeFunction(f.to_owned())),
             }
-        }
-        let ret_type = match self.eval(&func.ret, &env) {
-            Ok(Val::Type(t)) => t,
-            Ok(_) => return Err(EvalError::RetTypeNotType),
-            Err(e) => return Err(EvalError::RetTypeEvalError(Box::new(e))),
-        };
-
-        let result = match name {
-            "list" => Val::Type(Type::List(Box::new(env.get("t").unwrap().unwrap_type()?))),
-            "vector" => Val::Type(Type::Vector(
-                    Box::new(env.get("t").unwrap().unwrap_type()?),
-                    env.get("n").unwrap().unwrap_usize()?)
-            ),
-            "tuple" => Val::Type(Type::Tuple(env.get("ts").unwrap().unwrap_array_of_types()?)),
-            _ => self.eval(&func.body, &env)?
-        };
-
-        if self.has_type(&result, &ret_type) {
-            Ok(result)
         } else {
-            Err(EvalError::ResultIsWrongType(ret_type.clone(), result))
-        }
+            let mut env = HashMap::new();
+            for ((name, _), value) in func.args.iter().zip(args) {
+                env.insert(name.clone(), value.clone());
+            }
+
+            self.eval(&func.body, global_env, &env)?
+        };
+
+        Ok(result)
     }
 
-    fn eval(&self, expr: &Expr, env: &HashMap<String, Val>) -> Result<Val, EvalError> {
+    fn eval(&self, expr: &Expr, global_env: &mut HashMap<String, Val>, env: &HashMap<String, Val>) -> Result<Val, EvalError> {
         match expr {
             Expr::Int(n) => Ok(Val::Int(n.clone())),
-            Expr::Var(x) => self.lookup_value(x, env),
+            Expr::Var(x) => self.lookup_or_compute_value(x, global_env, env),
             Expr::Call(f, args) => {
-                let arg_vals:Vec<_> = args.iter().map(|x|self.eval(x,env)).collect::<Result<_,_>>()?;
-                self.call(f, &arg_vals)
+                let arg_vals:Vec<_> = args.iter().map(|x|self.eval(x,global_env,env)).collect::<Result<_,_>>()?;
+                self.call(f, &arg_vals, global_env)
             }
             Expr::Array(xs) => {
-                Ok(Val::Array(xs.iter().map(|x|self.eval(x,env)).collect::<Result<_,_>>()?))
+                Ok(Val::Array(xs.iter().map(|x|self.eval(x,global_env,env)).collect::<Result<_,_>>()?))
             }
         }
     }
 
     pub fn eval_main(&self, args: &[String]) -> Result<Val, EvalError> {
         let args_val = Val::Array(args.iter().map(|s|Val::String(s.clone())).collect());
-        self.call("main", &[args_val])
+        let mut global_env = HashMap::new();
+        self.call("main", &[args_val], &mut global_env)
     }
 }
 
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "Eval error {:?}", self)
     }
 }
 

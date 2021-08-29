@@ -1,0 +1,11 @@
+type : type = _;
+bool : type = _;
+false : bool = _;
+true : bool = _;
+int : type = _;
+uint : type = _;
+string : type = _;
+
+list (t:type) : type = _;
+vector (t:type) (n:uint) : type = _;
+tuple (ts:list type) : type = _;
